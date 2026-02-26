@@ -6,12 +6,12 @@ import androidx.room.PrimaryKey
 @Entity(tableName = "whiskey_table")
 data class Whiskey(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
-    val name: String,
-    val country: String,
-    val type: String = "",    // NY: t.ex. Single Malt, Bourbon
-    val volume: String = "",  // NY: t.ex. 70cl
-    val price: String,
-    val rating: Int,
+    val name: String = "",
+    val country: String = "",
+    val type: String = "",
+    val volume: String = "",
+    val price: String = "",
+    val rating: Int = 0,      // Säkerställ att vi har ett startvärde på 0
     val imageUrl: String? = null,
     val flavorProfile: String = "",
     val status: String = "Unopened",
@@ -20,9 +20,11 @@ data class Whiskey(
     val retailer: String = "Not specified",
     val isWishlist: Boolean = false
 ) {
+    // Hjälpfunktion för att få en snygg lista i UI:t
     val flavorList: List<String>
-        get() = if (flavorProfile.isBlank()) emptyList() else flavorProfile.split(",")
+        get() = if (flavorProfile.isBlank()) emptyList() else flavorProfile.split(",").map { it.trim() }
 
-    val numericPrice: Int
-        get() = price.filter { it.isDigit() }.toIntOrNull() ?: 0
+    // Används för summeringen i StatsCard
+    val numericPrice: Long
+        get() = price.filter { it.isDigit() }.toLongOrNull() ?: 0L
 }
