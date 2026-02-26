@@ -228,7 +228,6 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-                    // --- BAKGRUNDSBILDEN ÄR TILLBAKA ---
                     AsyncImage(
                         model = "https://images.unsplash.com/photo-1508253730651-e5ace80a7025?q=80&w=1470&auto=format&fit=crop",
                         contentDescription = null,
@@ -519,18 +518,50 @@ fun PremiumWhiskeyCard(w: Whiskey, onClick: () -> Unit) {
 
 @Composable
 fun PremiumStatsCard(list: List<Whiskey>) {
-    Card(Modifier.fillMaxWidth().padding(16.dp), colors = CardDefaults.cardColors(containerColor = Color.White.copy(0.08f)), shape = RoundedCornerShape(28.dp)) {
-        Row(Modifier.padding(24.dp).fillMaxWidth(), Arrangement.SpaceEvenly) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("BOTTLES", color = Color(0xFFFFBF00), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                Text("${list.size}", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Black)
+    val totalBottles = list.size
+    val unopenedCount = list.count { it.status == "Unopened" }
+    val openCount = list.count { it.status == "Open" }
+    val emptyCount = list.count { it.status == "Empty" }
+
+    val totalValue = list.sumOf { it.numericPrice }
+    val formattedValue = NumberFormat.getNumberInstance(Locale("sv", "SE")).format(totalValue)
+
+    Card(
+        Modifier.fillMaxWidth().padding(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White.copy(0.08f)),
+        shape = RoundedCornerShape(28.dp),
+        border = BorderStroke(1.dp, Color.White.copy(0.1f))
+    ) {
+        Column(Modifier.padding(24.dp)) {
+            Row(Modifier.fillMaxWidth(), Arrangement.SpaceEvenly) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("TOTAL VAULT", color = Color(0xFFFFBF00), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("$totalBottles", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Black)
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("EST. VALUE", color = Color(0xFFFFBF00), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text("$formattedValue:-", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Black)
+                }
             }
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                val totalValue = list.sumOf { it.numericPrice }
-                val formatted = NumberFormat.getNumberInstance(Locale("sv", "SE")).format(totalValue)
-                Text("TOTAL VALUE", color = Color(0xFFFFBF00), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                Text("$formatted:-", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Black)
+            Spacer(Modifier.height(20.dp))
+            Divider(color = Color.White.copy(0.1f), thickness = 1.dp)
+            Spacer(Modifier.height(20.dp))
+            Row(Modifier.fillMaxWidth(), Arrangement.SpaceAround) {
+                StatusMiniStat("UNOPENED", unopenedCount, Color(0xFF4CAF50))
+                StatusMiniStat("OPEN", openCount, Color(0xFFFFBF00))
+                StatusMiniStat("EMPTY", emptyCount, Color.Red)
             }
+        }
+    }
+}
+
+@Composable
+fun StatusMiniStat(label: String, count: Int, color: Color) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, color = color.copy(alpha = 0.8f), fontSize = 9.sp, fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(6.dp).clip(CircleShape).background(color))
+            Text(" $count", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
