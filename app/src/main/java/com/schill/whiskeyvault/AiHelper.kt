@@ -25,9 +25,7 @@ class AiHelper(private val apiKey: String) {
             apiKey = apiKey,
             safetySettings = safetySettings
         )
-    } else {
-        null
-    }
+    } else null
 
     suspend fun analyzeWhiskey(file: File): Whiskey? {
         val currentModel = model ?: return null
@@ -39,26 +37,26 @@ class AiHelper(private val apiKey: String) {
                 image(bitmap)
                 text("""
                     You are a world-class whiskey expert. Identify the bottle in this image.
-                    Return ONLY a JSON object. Be precise with names (e.g., "Lagavulin 16 Year Old").
+                    Return ONLY a JSON object.
                     
                     Use these exact keys:
                     "name": Full name and age,
                     "country": Country of origin,
-                    "region": Specific region (e.g. Islay, Speyside, Kentucky),
-                    "price": Estimated price in SEK (numbers only),
-                    "abv": Alcohol percentage (e.g. 43),
-                    "type": Style (Single Malt, Bourbon, etc.),
-                    "volume": Size (e.g. 70cl),
-                    "flavors": Pick the 3 most prominent notes from this list: Vanilla, Caramel, Honey, Smoke, Peat, Oak, Apple, Cinnamon, Dark Chocolate.
+                    "region": Specific region,
+                    "price": Estimated price in SEK,
+                    "abv": Alcohol percentage,
+                    "type": Style,
+                    "volume": Size,
+                    "flavors": Pick 3 notes (Vanilla, Caramel, etc.),
+                    "stores": "List 2-3 major retailers in the user's region (default to Sweden/Systembolaget) that sell this."
                     
-                    Important: No markdown, only raw JSON. If unsure about a value, provide your best expert guess.
+                    Important: No markdown, only raw JSON.
                 """.trimIndent())
             }
 
             val response = currentModel.generateContent(inputContent)
             val rawText = response.text ?: ""
 
-            // JSON-tvätt
             val startIndex = rawText.indexOf("{")
             val endIndex = rawText.lastIndexOf("}")
 
@@ -66,14 +64,12 @@ class AiHelper(private val apiKey: String) {
                 val cleanJson = rawText.substring(startIndex, endIndex + 1)
                 val json = JSONObject(cleanJson)
 
-                // Vi kombinerar land och region för en fylligare beskrivning
-                val origin = "${json.optString("country")}${if(json.has("region")) ", " + json.optString("region") else ""}"
+                val country = json.optString("country", "Unknown")
+                val region = json.optString("region", "")
+                val origin = if (region.isNotBlank() && region != "null") "$country, $region" else country
+
                 val rawFlavors = json.optString("flavors", "")
-                val cleanFlavors = rawFlavors
-                    .replace("[", "")
-                    .replace("]", "")
-                    .replace("\"", "")
-                    .replace(";", ",") // Om AI:n använde semikolon
+                val cleanFlavors = rawFlavors.replace("[", "").replace("]", "").replace("\"", "").replace(";", ",")
 
                 return Whiskey(
                     id = 0,
@@ -83,10 +79,10 @@ class AiHelper(private val apiKey: String) {
                     abv = json.optString("abv", ""),
                     type = json.optString("type", "Unknown"),
                     volume = json.optString("volume", "70cl"),
-                    flavorProfile = cleanFlavors, // <--- Här använder vi den tvättade texten
+                    flavorProfile = cleanFlavors,
                     rating = 5,
                     imageUrl = null,
-                    notes = "Expert AI Analysis completed."
+                    notes = "Suggested stores: ${json.optString("stores", "Systembolaget")}"
                 )
             } else null
         } catch (e: Exception) {

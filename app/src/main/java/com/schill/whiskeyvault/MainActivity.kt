@@ -1,16 +1,24 @@
 @file:OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 package com.schill.whiskeyvault
 
+import android.annotation.SuppressLint
 import android.util.Log
 import android.Manifest
 import android.content.*
+import android.location.Geocoder
 import android.os.Bundle
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.Build
+import android.media.ToneGenerator
+import android.media.AudioManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,24 +31,35 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.*
+import androidx.compose.ui.geometry.*
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.*
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
+import androidx.lifecycle.lifecycleScope
 import coil.compose.AsyncImage
+import com.google.ai.client.generativeai.GenerativeModel
+import com.google.ai.client.generativeai.type.BlockThreshold
+import com.google.ai.client.generativeai.type.HarmCategory
+import com.google.ai.client.generativeai.type.SafetySetting
+import com.google.android.gms.location.LocationServices
 import com.schill.whiskeyvault.ui.theme.WhiskeyVaultTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.NumberFormat
-import java.util.Locale
+import java.util.*
+import org.json.JSONObject
 
-// Smak-karta för dropdowns
+// --- MASTER DATA ---
 private val FLAVOR_MAP = mapOf(
     "Sweet Notes" to listOf("Vanilla", "Butterscotch", "Coconut", "Roasted Nuts", "Caramel", "Honey", "Toffee"),
     "Fruity Notes" to listOf("Apple", "Pear", "Orange Peel", "Lemon", "Mango", "Banana"),
@@ -52,6 +71,69 @@ private val FLAVOR_MAP = mapOf(
 
 class MainActivity : ComponentActivity() {
     private var currentPhotoPath: String? = null
+    private val toneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
+
+    private fun searchWhiskeyPrice(
+        barcode: String,
+        country: String,
+        myCollection: List<Whiskey>,
+        onResult: (Whiskey, Boolean) -> Unit,
+        onError: () -> Unit
+    ) {
+        val generativeModel = GenerativeModel(
+            modelName = "gemini-1.5-flash",
+            apiKey = Secrets.GEMINI_KEY,
+            safetySettings = listOf(
+                SafetySetting(HarmCategory.HARASSMENT, BlockThreshold.NONE),
+                SafetySetting(HarmCategory.HATE_SPEECH, BlockThreshold.NONE),
+                SafetySetting(HarmCategory.SEXUALLY_EXPLICIT, BlockThreshold.NONE),
+                SafetySetting(HarmCategory.DANGEROUS_CONTENT, BlockThreshold.NONE)
+            )
+        )
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val prompt = """
+                Identify whiskey from barcode $barcode. User in $country.
+                Return ONLY JSON: {
+                    "name":"full name",
+                    "price":"estimated price in local currency",
+                    "distillery":"..",
+                    "type":"..",
+                    "country":"..",
+                    "stores":"List 2-3 popular retailers in $country that sell this as a plain string"
+                }
+            """.trimIndent()
+
+            try {
+                val response = generativeModel.generateContent(prompt)
+                val cleanJson = response.text?.replace("```json", "")?.replace("```", "")?.trim() ?: "{}"
+                val json = JSONObject(cleanJson)
+                val scannedName = json.optString("name", "Unknown Whiskey")
+                val isDuplicate = myCollection.any { it.name.equals(scannedName, ignoreCase = true) }
+
+                val storeInfo = json.optString("stores", "N/A")
+                    .replace("[", "").replace("]", "")
+                    .replace("\"", "").trim()
+
+                withContext(Dispatchers.Main) {
+                    onResult(Whiskey(
+                        name = scannedName,
+                        price = json.optString("price", "N/A"),
+                        country = json.optString("country", country),
+                        type = json.optString("type", "Whiskey"),
+                        notes = "Suggested stores: $storeInfo\nBarcode: $barcode"
+                    ), isDuplicate)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) { onError() }
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        toneGenerator.release()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -63,32 +145,54 @@ class MainActivity : ComponentActivity() {
             WhiskeyVaultTheme {
                 val context = LocalContext.current
                 val scope = rememberCoroutineScope()
+                val vibrator = context.getSystemService(VIBRATOR_SERVICE) as Vibrator
 
-                // --- SETTINGS & AI ---
                 val aiHelper = remember { AiHelper(Secrets.GEMINI_KEY) }
+                val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
-                // --- DATABASE STATES ---
                 val myCollection by whiskeyDao.getAllWhiskeys().collectAsState(initial = emptyList())
                 var searchQuery by remember { mutableStateOf("") }
                 var activeFilter by remember { mutableStateOf("All") }
                 var sortOrder by remember { mutableStateOf("Name") }
 
-                // --- UI STATES ---
                 var showAddDialog by remember { mutableStateOf(false) }
-                var showSettingsDialog by remember { mutableStateOf(false) }
                 var showSelectionDialog by remember { mutableStateOf(false) }
+                var showScanner by remember { mutableStateOf(false) }
+                var isCodeDetected by remember { mutableStateOf(false) }
+                var isDuplicateFound by remember { mutableStateOf(false) }
+                var userCountry by remember { mutableStateOf("SE") }
                 var selectedWhiskey by remember { mutableStateOf<Whiskey?>(null) }
                 var editingWhiskey by remember { mutableStateOf<Whiskey?>(null) }
                 var aiDraftWhiskey by remember { mutableStateOf<Whiskey?>(null) }
                 var isProcessing by remember { mutableStateOf(false) }
                 var capturedUrl by remember { mutableStateOf<String?>(null) }
+                var scannedResult by remember { mutableStateOf<Whiskey?>(null) }
 
-                // --- LOGIK: FILTRERING & SORTERING ---
+                val detectionHistory = remember { mutableStateListOf<String>() }
+                var lastDetectionTime by remember { mutableLongStateOf(0L) }
+
+                @SuppressLint("MissingPermission")
+                fun updateLocation() {
+                    fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+                        location?.let {
+                            val geocoder = Geocoder(context, Locale.getDefault())
+                            val addresses = geocoder.getFromLocation(it.latitude, it.longitude, 1)
+                            userCountry = addresses?.get(0)?.countryCode ?: "SE"
+                        }
+                    }
+                }
+
                 val processedCollection = remember(myCollection, searchQuery, activeFilter, sortOrder) {
                     var list = myCollection.filter {
-                        it.name.contains(searchQuery, true) || it.flavorProfile.contains(searchQuery, true)
+                        (it.name.contains(searchQuery, true) || it.flavorProfile.contains(searchQuery, true))
                     }
-                    if (activeFilter != "All") { list = list.filter { it.country.contains(activeFilter, true) } }
+
+                    list = when (activeFilter) {
+                        "All" -> list.filter { !it.isWishlist }
+                        "Wishlist" -> list.filter { it.isWishlist }
+                        else -> list.filter { it.country.contains(activeFilter, true) && !it.isWishlist }
+                    }
+
                     when (sortOrder) {
                         "Price" -> list.sortedByDescending { it.numericPrice }
                         "Rating" -> list.sortedByDescending { it.rating }
@@ -102,36 +206,33 @@ class MainActivity : ComponentActivity() {
                         isProcessing = true
                         scope.launch {
                             try {
-                                val aiResult = aiHelper.analyzeWhiskey(file)
+                                val result = aiHelper.analyzeWhiskey(file)
                                 NetworkHelper.uploadToImgur(file) { url ->
-                                    val finalDraft = aiResult?.copy(imageUrl = url) ?: Whiskey(imageUrl = url)
                                     capturedUrl = url
-                                    aiDraftWhiskey = finalDraft
+                                    aiDraftWhiskey = result
                                     isProcessing = false
                                     showAddDialog = true
                                 }
-                            } catch (e: Exception) {
-                                isProcessing = false
-                            }
+                            } catch (e: Exception) { isProcessing = false }
                         }
                     }
                 }
 
-                val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
-                    if (isGranted) {
-                        val file = File(context.cacheDir, "camera_photo_${System.currentTimeMillis()}.jpg")
+                val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
+                    if (perms[Manifest.permission.CAMERA] == true) {
+                        val file = File(context.cacheDir, "photo_${System.currentTimeMillis()}.jpg")
                         currentPhotoPath = file.absolutePath
                         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
                         cameraLauncher.launch(uri)
                     }
                 }
 
-                // --- UI LAYOUT ---
                 Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+                    // --- BAKGRUNDSBILDEN ÄR TILLBAKA ---
                     AsyncImage(
                         model = "https://images.unsplash.com/photo-1508253730651-e5ace80a7025?q=80&w=1470&auto=format&fit=crop",
                         contentDescription = null,
-                        modifier = Modifier.fillMaxSize().alpha(0.2f),
+                        modifier = Modifier.fillMaxSize().alpha(0.25f),
                         contentScale = ContentScale.Crop
                     )
 
@@ -141,7 +242,7 @@ class MainActivity : ComponentActivity() {
                         topBar = {
                             Row(Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                                 Text("WHISKEY VAULT", color = Color(0xFFFFBF00), fontSize = 24.sp, fontWeight = FontWeight.Black)
-                                IconButton(onClick = { showSettingsDialog = true }) { Icon(Icons.Default.Settings, null, tint = Color.White) }
+                                IconButton(onClick = { }) { Icon(Icons.Default.Settings, null, tint = Color.White) }
                             }
                         },
                         floatingActionButton = {
@@ -149,15 +250,21 @@ class MainActivity : ComponentActivity() {
                         }
                     ) { innerPadding ->
                         LazyColumn(modifier = Modifier.fillMaxSize().padding(innerPadding), contentPadding = PaddingValues(bottom = 80.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            item { PremiumStatsCard(myCollection) }
+                            item { PremiumStatsCard(myCollection.filter { !it.isWishlist }) }
                             item {
                                 TextField(
-                                    value = searchQuery, onValueChange = { searchQuery = it },
+                                    value = searchQuery,
+                                    onValueChange = { searchQuery = it },
                                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                                     placeholder = { Text("Search vault...", color = Color.Gray) },
                                     leadingIcon = { Icon(Icons.Default.Search, null, tint = Color(0xFFFFBF00)) },
+                                    trailingIcon = {
+                                        IconButton(onClick = { updateLocation(); showScanner = true; permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_COARSE_LOCATION)) }) {
+                                            Icon(Icons.Default.QrCodeScanner, null, tint = Color(0xFFFFBF00))
+                                        }
+                                    },
                                     shape = RoundedCornerShape(16.dp),
-                                    colors = TextFieldDefaults.colors(focusedContainerColor = Color.White.copy(0.1f), unfocusedContainerColor = Color.White.copy(0.1f), focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, focusedTextColor = Color.White, unfocusedTextColor = Color.White)
+                                    colors = TextFieldDefaults.colors(focusedContainerColor = Color.White.copy(0.1f), unfocusedContainerColor = Color.White.copy(0.1f), focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, focusedTextColor = Color.White)
                                 )
                             }
                             item { SortingAndFilterRow(activeFilter, { activeFilter = it }, sortOrder, { sortOrder = it }) }
@@ -169,15 +276,36 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // --- DIALOGER ---
-                    if (showSelectionDialog) {
-                        AlertDialog(
-                            onDismissRequest = { showSelectionDialog = false },
-                            title = { Text("Add Whiskey", color = Color(0xFFFFBF00)) },
-                            text = { Text("Use AI to scan label?", color = Color.White) },
-                            confirmButton = { Button(onClick = { showSelectionDialog = false; permissionLauncher.launch(Manifest.permission.CAMERA) }) { Text("Scan") } },
-                            dismissButton = { TextButton(onClick = { showSelectionDialog = false; showAddDialog = true }) { Text("Manual") } },
-                            containerColor = Color(0xFF1E1E1E)
+                    if (showScanner) {
+                        LiveScannerDialog(
+                            isDetected = isCodeDetected,
+                            onDismiss = { showScanner = false; isCodeDetected = false; detectionHistory.clear() },
+                            onCodeScanned = { barcode ->
+                                val currentTime = System.currentTimeMillis()
+                                if (currentTime - lastDetectionTime > 150) {
+                                    lastDetectionTime = currentTime
+                                    detectionHistory.add(barcode)
+                                    if (detectionHistory.size > 6) detectionHistory.removeAt(0)
+                                    val occurrences = detectionHistory.count { it == barcode }
+                                    if (occurrences >= 5 && !isCodeDetected) {
+                                        isCodeDetected = true
+                                        toneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+                                        vibrator.vibrate(VibrationEffect.createOneShot(100, VibrationEffect.DEFAULT_AMPLITUDE))
+                                        lifecycleScope.launch {
+                                            delay(1000)
+                                            showScanner = false
+                                            isCodeDetected = false
+                                            detectionHistory.clear()
+                                            isProcessing = true
+                                            searchWhiskeyPrice(barcode, userCountry, myCollection, { result, isDuplicate ->
+                                                scannedResult = result
+                                                isDuplicateFound = isDuplicate
+                                                isProcessing = false
+                                            }, { isProcessing = false })
+                                        }
+                                    }
+                                }
+                            }
                         )
                     }
 
@@ -185,32 +313,19 @@ class MainActivity : ComponentActivity() {
                         Box(Modifier.fillMaxSize().background(Color.Black.copy(0.85f)), contentAlignment = Alignment.Center) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 CircularProgressIndicator(color = Color(0xFFFFBF00))
-                                Text("Gemini is analyzing...", color = Color.White, modifier = Modifier.padding(top = 16.dp))
+                                Text("AI is hunting for details & stores...", color = Color.White, modifier = Modifier.padding(top = 16.dp))
                             }
                         }
                     }
 
-                    if (selectedWhiskey != null) {
-                        DetailDialog(
-                            w = selectedWhiskey!!,
-                            onDismiss = { selectedWhiskey = null },
-                            onEdit = {
-                                editingWhiskey = selectedWhiskey
-                                capturedUrl = selectedWhiskey?.imageUrl
-                                showAddDialog = true
-                                selectedWhiskey = null
-                            },
-                            onDelete = { whiskeyToDelete ->
-                                scope.launch { whiskeyDao.deleteWhiskey(whiskeyToDelete) }
-                                selectedWhiskey = null
-                            },
-                            onRatingUpdate = { whiskeyToUpdate, newRating ->
-                                scope.launch {
-                                    val updated = whiskeyToUpdate.copy(rating = newRating)
-                                    whiskeyDao.insertWhiskey(updated)
-                                    selectedWhiskey = updated
-                                }
-                            }
+                    if (showSelectionDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showSelectionDialog = false },
+                            title = { Text("Add Whiskey", color = Color(0xFFFFBF00)) },
+                            text = { Text("Scan label or enter manually?", color = Color.White) },
+                            confirmButton = { Button(onClick = { showSelectionDialog = false; permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA)) }) { Text("Scan Label") } },
+                            dismissButton = { TextButton(onClick = { showSelectionDialog = false; showAddDialog = true }) { Text("Manual") } },
+                            containerColor = Color(0xFF1E1E1E)
                         )
                     }
 
@@ -222,13 +337,185 @@ class MainActivity : ComponentActivity() {
                             onSave = { scope.launch { whiskeyDao.insertWhiskey(it) }; showAddDialog = false; aiDraftWhiskey = null; editingWhiskey = null }
                         )
                     }
+
+                    if (selectedWhiskey != null) {
+                        DetailDialog(
+                            w = selectedWhiskey!!,
+                            onDismiss = { selectedWhiskey = null },
+                            onEdit = { editingWhiskey = selectedWhiskey; capturedUrl = selectedWhiskey?.imageUrl; showAddDialog = true; selectedWhiskey = null },
+                            onDelete = { scope.launch { whiskeyDao.deleteWhiskey(it) }; selectedWhiskey = null },
+                            onRatingUpdate = { w, r -> scope.launch { whiskeyDao.insertWhiskey(w.copy(rating = r)); selectedWhiskey = w.copy(rating = r) } }
+                        )
+                    }
                 }
             }
         }
     }
 }
 
-// --- KOMPONENTER ---
+// --- UI COMPONENTS ---
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun FullAddDialog(existing: Whiskey?, img: String?, onDismiss: () -> Unit, onSave: (Whiskey) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var country by remember { mutableStateOf("") }
+    var price by remember { mutableStateOf("") }
+    var abv by remember { mutableStateOf("") }
+    var type by remember { mutableStateOf("") }
+    var volume by remember { mutableStateOf("") }
+    var notes by remember { mutableStateOf("") }
+    var aiStores by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf("Unopened") }
+    var isWishlist by remember { mutableStateOf(false) }
+    val selectedFlavors = remember { mutableStateListOf<String>() }
+    var openDropdown by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(existing) {
+        existing?.let {
+            name = it.name; country = it.country; price = it.price; abv = it.abv; type = it.type; volume = it.volume
+            status = it.status
+            isWishlist = it.isWishlist
+            if (it.notes.startsWith("Suggested stores:")) {
+                val split = it.notes.split("\n\n")
+                aiStores = split[0].replace("[", "").replace("]", "").replace("\"", "")
+                notes = if (split.size > 1) split[1] else ""
+            } else {
+                notes = it.notes; aiStores = ""
+            }
+            selectedFlavors.clear()
+            if (it.flavorProfile.isNotBlank()) selectedFlavors.addAll(it.flavorProfile.split(",").map { it.trim() })
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(Modifier.fillMaxSize(), color = Color(0xFF121212)) {
+            Column(Modifier.padding(24.dp).verticalScroll(rememberScrollState()).statusBarsPadding()) {
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                    Text("VAULT ENTRY", color = Color(0xFFFFBF00), fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, null, tint = Color.White) }
+                }
+
+                AsyncImage(model = img, contentDescription = null, modifier = Modifier.fillMaxWidth().height(180.dp).padding(vertical = 16.dp).clip(RoundedCornerShape(12.dp)), contentScale = ContentScale.Crop)
+
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 12.dp)) {
+                    Checkbox(checked = isWishlist, onCheckedChange = { isWishlist = it }, colors = CheckboxDefaults.colors(checkedColor = Color(0xFFFFBF00)))
+                    Text("Add to Wishlist", color = Color.White)
+                }
+
+                if (!isWishlist) {
+                    Text("Bottle Status", color = Color(0xFFFFBF00), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), Arrangement.spacedBy(8.dp)) {
+                        listOf("Unopened", "Open", "Empty").forEach { s ->
+                            FilterChip(
+                                selected = status == s,
+                                onClick = { status = s },
+                                label = { Text(s) },
+                                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Color(0xFFFFBF00).copy(0.2f), selectedLabelColor = Color(0xFFFFBF00), labelColor = Color.White)
+                            )
+                        }
+                    }
+                }
+
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth(), textStyle = TextStyle(color = Color.White))
+
+                if (aiStores.isNotBlank()) {
+                    Card(Modifier.fillMaxWidth().padding(top = 16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFFFBF00).copy(0.1f)), border = BorderStroke(1.dp, Color(0xFFFFBF00).copy(0.5f))) {
+                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Store, null, tint = Color(0xFFFFBF00))
+                            Spacer(Modifier.width(8.dp))
+                            Text(aiStores, color = Color.White, fontSize = 12.sp)
+                        }
+                    }
+                }
+
+                OutlinedTextField(value = country, onValueChange = { country = it }, label = { Text("Country") }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), textStyle = TextStyle(color = Color.White))
+
+                Text("FLAVOR PROFILES", color = Color(0xFFFFBF00), modifier = Modifier.padding(top = 24.dp, bottom = 8.dp), fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                FLAVOR_MAP.forEach { (category, flavors) ->
+                    Box(Modifier.padding(vertical = 4.dp)) {
+                        OutlinedButton(onClick = { openDropdown = if (openDropdown == category) null else category }, modifier = Modifier.fillMaxWidth()) {
+                            Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+                                Text(category, color = Color.White)
+                                Icon(Icons.Default.ArrowDropDown, null, tint = Color(0xFFFFBF00))
+                            }
+                        }
+                        DropdownMenu(expanded = openDropdown == category, onDismissRequest = { openDropdown = null }, modifier = Modifier.fillMaxWidth(0.85f).background(Color(0xFF2D2D2D))) {
+                            flavors.forEach { flavor ->
+                                DropdownMenuItem(
+                                    text = { Row { Checkbox(selectedFlavors.contains(flavor), null); Text(flavor, color = Color.White) } },
+                                    onClick = { if (selectedFlavors.contains(flavor)) selectedFlavors.remove(flavor) else selectedFlavors.add(flavor) }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                FlowRow(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    selectedFlavors.forEach { SuggestionChip(onClick = { }, label = { Text(it, fontSize = 10.sp) }) }
+                }
+
+                Row(Modifier.fillMaxWidth().padding(top = 16.dp), Arrangement.spacedBy(16.dp)) {
+                    OutlinedTextField(value = price, onValueChange = { price = it }, label = { Text("Price") }, modifier = Modifier.weight(1f), textStyle = TextStyle(color = Color.White))
+                    OutlinedTextField(value = abv, onValueChange = { abv = it }, label = { Text("ABV %") }, modifier = Modifier.weight(1f), textStyle = TextStyle(color = Color.White))
+                }
+
+                OutlinedTextField(value = notes, onValueChange = { notes = it }, label = { Text("MY NOTES") }, modifier = Modifier.fillMaxWidth().padding(top = 16.dp), textStyle = TextStyle(color = Color.White), minLines = 3)
+
+                Button(onClick = {
+                    val finalNotes = if (aiStores.isNotBlank()) "$aiStores\n\n$notes" else notes
+                    onSave(Whiskey(id = existing?.id ?: 0, name = name, country = country, price = price, abv = abv, type = type, volume = volume, flavorProfile = selectedFlavors.joinToString(","), rating = existing?.rating ?: 5, imageUrl = img, notes = finalNotes.trim(), status = status, isWishlist = isWishlist))
+                }, modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 40.dp).height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFBF00))) {
+                    Text("SAVE TO VAULT", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PremiumWhiskeyCard(w: Whiskey, onClick: () -> Unit) {
+    Card(
+        Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White.copy(0.05f)),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box {
+                AsyncImage(
+                    model = w.imageUrl ?: "https://via.placeholder.com/150",
+                    contentDescription = null,
+                    modifier = Modifier.size(70.dp).clip(RoundedCornerShape(12.dp)),
+                    contentScale = ContentScale.Crop
+                )
+                if (w.isWishlist) {
+                    Icon(Icons.Default.Favorite, null, tint = Color.Red, modifier = Modifier.size(20.dp).align(Alignment.TopEnd).padding(2.dp))
+                }
+            }
+
+            Column(Modifier.padding(start = 16.dp).weight(1f)) {
+                Text(w.name, color = Color(0xFFFFBF00), fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("${w.type} • ${w.abv}%", color = Color.White.copy(0.6f), fontSize = 12.sp)
+
+                if (!w.isWishlist) {
+                    Spacer(Modifier.height(8.dp))
+                    val statusColor = when(w.status) {
+                        "Unopened" -> Color(0xFF4CAF50)
+                        "Open" -> Color(0xFFFFBF00)
+                        else -> Color.Red
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(8.dp).clip(CircleShape).background(statusColor))
+                        Text("  ${w.status}", color = statusColor, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                    }
+                } else {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Wishlist", color = Color.Red.copy(0.8f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun PremiumStatsCard(list: List<Whiskey>) {
@@ -249,16 +536,18 @@ fun PremiumStatsCard(list: List<Whiskey>) {
 }
 
 @Composable
-fun RatingBar(rating: Int, onRatingChanged: (Int) -> Unit, modifier: Modifier = Modifier) {
-    Row(modifier = modifier) {
-        repeat(5) { index ->
-            val starIndex = index + 1
-            Icon(
-                imageVector = if (starIndex <= rating) Icons.Default.Star else Icons.Default.StarBorder,
-                contentDescription = null,
-                tint = if (starIndex <= rating) Color(0xFFFFBF00) else Color.White.copy(0.3f),
-                modifier = Modifier.size(32.dp).clickable { onRatingChanged(starIndex) }
-            )
+fun SortingAndFilterRow(currentFilter: String, onFilterChange: (String) -> Unit, currentSort: String, onSortChange: (String) -> Unit) {
+    Column(Modifier.padding(horizontal = 16.dp)) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("All", "Wishlist", "Scotland", "USA", "Ireland", "Japan").forEach { country ->
+                FilterChip(selected = currentFilter == country, onClick = { onFilterChange(country) }, label = { Text(country) }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Color(0xFFFFBF00).copy(0.2f), selectedLabelColor = Color(0xFFFFBF00), labelColor = Color.White))
+            }
+        }
+        Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text("Sort by:", color = Color.Gray, fontSize = 12.sp)
+            listOf("Name", "Price", "Rating").forEach { sort ->
+                Text(sort, color = if(currentSort == sort) Color(0xFFFFBF00) else Color.White, fontSize = 12.sp, modifier = Modifier.clickable { onSortChange(sort) })
+            }
         }
     }
 }
@@ -275,14 +564,19 @@ fun DetailDialog(w: Whiskey, onDismiss: () -> Unit, onEdit: () -> Unit, onDelete
                 }
                 Column(Modifier.padding(24.dp)) {
                     Text(w.name, color = Color(0xFFFFBF00), fontSize = 28.sp, fontWeight = FontWeight.Bold)
-                    RatingBar(rating = w.rating, onRatingChanged = { onRatingUpdate(w, it) }, modifier = Modifier.padding(vertical = 12.dp))
+                    if (w.isWishlist) {
+                        Text("❤️ ON WISHLIST", color = Color.Red, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    } else {
+                        Text("Status: ${w.status}", color = Color.White.copy(0.7f))
+                    }
+                    Row(Modifier.padding(vertical = 12.dp)) {
+                        repeat(5) { i -> Icon(if (i < w.rating) Icons.Default.Star else Icons.Default.StarBorder, null, tint = Color(0xFFFFBF00), modifier = Modifier.clickable { onRatingUpdate(w, i + 1) }) }
+                    }
                     Text("${w.country} • ${w.type}", color = Color.White.copy(0.7f))
                     Spacer(Modifier.height(16.dp))
-                    Text("FLAVOR PROFILE", color = Color(0xFFFFBF00), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    Text(w.flavorProfile.ifBlank { "No notes added." }, color = Color.White)
-                    Spacer(Modifier.height(16.dp))
-                    Text("PERSONAL NOTES", color = Color(0xFFFFBF00), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    Text(w.notes.ifBlank { "No personal notes." }, color = Color.White)
+                    Text(w.flavorProfile, color = Color.White)
+                    Spacer(Modifier.height(8.dp))
+                    Text(w.notes, color = Color.White.copy(0.6f), fontSize = 14.sp)
                     Button(onClick = onEdit, modifier = Modifier.fillMaxWidth().padding(top = 32.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFBF00))) { Text("EDIT BOTTLE", color = Color.Black) }
                 }
             }
@@ -291,104 +585,30 @@ fun DetailDialog(w: Whiskey, onDismiss: () -> Unit, onEdit: () -> Unit, onDelete
 }
 
 @Composable
-fun FullAddDialog(existing: Whiskey?, img: String?, onDismiss: () -> Unit, onSave: (Whiskey) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var country by remember { mutableStateOf("") }
-    var price by remember { mutableStateOf("") }
-    var abv by remember { mutableStateOf("") }
-    var type by remember { mutableStateOf("") }
-    var volume by remember { mutableStateOf("") }
-    var notes by remember { mutableStateOf("") }
-    val selectedFlavors = remember { mutableStateListOf<String>() }
-    var openDropdown by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(existing) {
-        existing?.let {
-            name = it.name; country = it.country; price = it.price; abv = it.abv; type = it.type; volume = it.volume; notes = it.notes
-            selectedFlavors.clear()
-            if (it.flavorProfile.isNotBlank()) selectedFlavors.addAll(it.flavorProfile.split(",").map { it.trim() })
-        }
-    }
-
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxSize(), color = Color(0xFF121212)) {
-            Column(Modifier.padding(24.dp).verticalScroll(rememberScrollState()).statusBarsPadding()) {
-                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
-                    Text("VAULT ENTRY", color = Color(0xFFFFBF00), fontSize = 24.sp, fontWeight = FontWeight.Bold)
-                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, null, tint = Color.White) }
-                }
-                AsyncImage(model = img, contentDescription = null, modifier = Modifier.fillMaxWidth().height(180.dp).padding(vertical = 16.dp).clip(RoundedCornerShape(12.dp)), contentScale = ContentScale.Crop)
-                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth(), textStyle = TextStyle(color = Color.White))
-                OutlinedTextField(value = country, onValueChange = { country = it }, label = { Text("Country") }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), textStyle = TextStyle(color = Color.White))
-
-                Row(Modifier.fillMaxWidth().padding(top = 8.dp), Arrangement.spacedBy(16.dp)) {
-                    OutlinedTextField(value = type, onValueChange = { type = it }, label = { Text("Type") }, modifier = Modifier.weight(1f), textStyle = TextStyle(color = Color.White))
-                    OutlinedTextField(value = volume, onValueChange = { volume = it }, label = { Text("Volume") }, modifier = Modifier.weight(1f), textStyle = TextStyle(color = Color.White))
-                }
-
-                Text("Flavors", color = Color(0xFFFFBF00), modifier = Modifier.padding(top = 24.dp), fontWeight = FontWeight.Bold)
-                FLAVOR_MAP.forEach { (cat, list) ->
-                    Box(Modifier.padding(vertical = 4.dp)) {
-                        OutlinedButton(onClick = { openDropdown = if(openDropdown == cat) null else cat }, modifier = Modifier.fillMaxWidth()) {
-                            Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) { Text(cat, color = Color.White); Icon(Icons.Default.ArrowDropDown, null, tint = Color(0xFFFFBF00)) }
-                        }
-                        DropdownMenu(expanded = openDropdown == cat, onDismissRequest = { openDropdown = null }, modifier = Modifier.background(Color(0xFF2D2D2D))) {
-                            list.forEach { n ->
-                                DropdownMenuItem(
-                                    text = { Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(selectedFlavors.contains(n), null); Text(n, color = Color.White) } },
-                                    onClick = { if(selectedFlavors.contains(n)) selectedFlavors.remove(n) else selectedFlavors.add(n) }
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Row(Modifier.fillMaxWidth().padding(top = 16.dp), Arrangement.spacedBy(16.dp)) {
-                    OutlinedTextField(value = price, onValueChange = { price = it }, label = { Text("Price (SEK)") }, modifier = Modifier.weight(1f), textStyle = TextStyle(color = Color.White))
-                    OutlinedTextField(value = abv, onValueChange = { abv = it }, label = { Text("ABV %") }, modifier = Modifier.weight(1f), textStyle = TextStyle(color = Color.White))
-                }
-
-                OutlinedTextField(value = notes, onValueChange = { notes = it }, label = { Text("Notes") }, modifier = Modifier.fillMaxWidth().padding(top = 16.dp).height(100.dp), textStyle = TextStyle(color = Color.White))
-                Button(onClick = { onSave(Whiskey(id = existing?.id ?: 0, name = name, country = country, price = price, abv = abv, type = type, volume = volume, flavorProfile = selectedFlavors.joinToString(","), rating = existing?.rating ?: 5, imageUrl = img, notes = notes)) }, modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 40.dp).height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFBF00))) {
-                    Text("SAVE TO VAULT", color = Color.Black, fontWeight = FontWeight.Bold)
-                }
+fun LiveScannerDialog(isDetected: Boolean, onDismiss: () -> Unit, onCodeScanned: (String) -> Unit) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            if (!isDetected) {
+                BarcodeScannerView(modifier = Modifier.fillMaxSize()) { barcodeValue: String -> onCodeScanned(barcodeValue) }
             }
+            ScannerOverlay(isDetected = isDetected, onDismiss = onDismiss)
         }
     }
 }
 
 @Composable
-fun PremiumWhiskeyCard(w: Whiskey, onClick: () -> Unit) {
-    Card(Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 4.dp), colors = CardDefaults.cardColors(containerColor = Color.White.copy(0.05f)), shape = RoundedCornerShape(16.dp)) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            AsyncImage(model = w.imageUrl ?: "https://via.placeholder.com/150", contentDescription = null, modifier = Modifier.size(64.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
-            Column(Modifier.padding(start = 16.dp).weight(1f)) {
-                Text(w.name, color = Color(0xFFFFBF00), fontWeight = FontWeight.Bold)
-                Text("${w.type} • ${w.abv}%", color = Color.White.copy(0.6f), fontSize = 12.sp)
-            }
-            if(w.rating > 0) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("${w.rating}", color = Color(0xFFFFBF00), fontWeight = FontWeight.Bold)
-                    Icon(Icons.Default.Star, null, tint = Color(0xFFFFBF00), modifier = Modifier.size(16.dp))
-                }
-            }
+fun ScannerOverlay(isDetected: Boolean, onDismiss: () -> Unit) {
+    val borderColor by animateColorAsState(targetValue = if (isDetected) Color(0xFF4CAF50) else Color(0xFFFFBF00), label = "")
+    Box(modifier = Modifier.fillMaxSize()) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val scannerSize = size.width * 0.7f
+            val left = (size.width - scannerSize) / 2
+            val top = (size.height - scannerSize) / 2
+            drawRect(Color.Black.copy(alpha = if (isDetected) 0.4f else 0.7f))
+            drawRoundRect(color = Color.Transparent, topLeft = Offset(left, top), size = Size(scannerSize, scannerSize), blendMode = BlendMode.Clear, cornerRadius = CornerRadius(16.dp.toPx()))
+            drawRoundRect(color = borderColor, topLeft = Offset(left, top), size = Size(scannerSize, scannerSize), style = Stroke(width = if (isDetected) 6.dp.toPx() else 3.dp.toPx()), cornerRadius = CornerRadius(16.dp.toPx()))
         }
-    }
-}
-
-@Composable
-fun SortingAndFilterRow(currentFilter: String, onFilterChange: (String) -> Unit, currentSort: String, onSortChange: (String) -> Unit) {
-    Column(Modifier.padding(horizontal = 16.dp)) {
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("All", "Scotland", "USA", "Ireland", "Japan").forEach { country ->
-                FilterChip(selected = currentFilter == country, onClick = { onFilterChange(country) }, label = { Text(country) }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Color(0xFFFFBF00).copy(0.2f), selectedLabelColor = Color(0xFFFFBF00), labelColor = Color.White))
-            }
-        }
-        Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text("Sort by:", color = Color.Gray, fontSize = 12.sp)
-            listOf("Name", "Price", "Rating").forEach { sort ->
-                Text(sort, color = if(currentSort == sort) Color(0xFFFFBF00) else Color.White, fontSize = 12.sp, modifier = Modifier.clickable { onSortChange(sort) })
-            }
-        }
+        IconButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopStart).padding(top = 40.dp, start = 20.dp)) { Icon(Icons.Default.Close, null, tint = Color.White) }
+        Text(text = if (isDetected) "MATCH!" else "Align barcode", color = if (isDetected) Color(0xFF4CAF50) else Color.White, modifier = Modifier.align(Alignment.Center).padding(top = 380.dp))
     }
 }
