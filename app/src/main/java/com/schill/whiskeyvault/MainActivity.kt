@@ -82,7 +82,7 @@ class MainActivity : ComponentActivity() {
     ) {
         val generativeModel = GenerativeModel(
             modelName = "gemini-1.5-flash",
-            apiKey = Secrets.GEMINI_KEY,
+            apiKey = BuildConfig.GEMINI_KEY, // FIX 1: Ändrat från Secrets.GEMINI_KEY
             safetySettings = listOf(
                 SafetySetting(HarmCategory.HARASSMENT, BlockThreshold.NONE),
                 SafetySetting(HarmCategory.HATE_SPEECH, BlockThreshold.NONE),
@@ -147,7 +147,7 @@ class MainActivity : ComponentActivity() {
                 val scope = rememberCoroutineScope()
                 val vibrator = context.getSystemService(VIBRATOR_SERVICE) as Vibrator
 
-                val aiHelper = remember { AiHelper(Secrets.GEMINI_KEY) }
+                val aiHelper = remember { AiHelper(BuildConfig.GEMINI_KEY) } // FIX 2: Ändrat från Secrets.GEMINI_KEY
                 val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
                 val myCollection by whiskeyDao.getAllWhiskeys().collectAsState(initial = emptyList())
@@ -241,7 +241,36 @@ class MainActivity : ComponentActivity() {
                         topBar = {
                             Row(Modifier.fillMaxWidth().statusBarsPadding().padding(16.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                                 Text("WHISKEY VAULT", color = Color(0xFFFFBF00), fontSize = 24.sp, fontWeight = FontWeight.Black)
-                                IconButton(onClick = { }) { Icon(Icons.Default.Settings, null, tint = Color.White) }
+
+                                Row {
+                                    // --- NY DELA-FUNKTION FÖR WISHLIST ---
+                                    IconButton(onClick = {
+                                        // Filtrera ut alla flaskor som är på wishlist
+                                        val wishlist = myCollection.filter { it.isWishlist }
+
+                                        // Skapa en snygg text
+                                        val shareText = if (wishlist.isNotEmpty()) {
+                                            "🥃 Min Whiskey Wishlist:\n\n" + wishlist.joinToString("\n") { bottle ->
+                                                "- ${bottle.name} (${bottle.type})"
+                                            }
+                                        } else {
+                                            "Min Wishlist är tom just nu! Dags att jaga ny whiskey. 🥃"
+                                        }
+
+                                        // Starta Androids inbyggda dela-meny
+                                        val sendIntent = Intent().apply {
+                                            action = Intent.ACTION_SEND
+                                            putExtra(Intent.EXTRA_TEXT, shareText)
+                                            type = "text/plain"
+                                        }
+                                        context.startActivity(Intent.createChooser(sendIntent, "Dela Wishlist"))
+                                    }) {
+                                        Icon(Icons.Default.Share, contentDescription = "Dela", tint = Color.White)
+                                    }
+
+                                    // Befintlig inställningsknapp
+                                    IconButton(onClick = { }) { Icon(Icons.Default.Settings, null, tint = Color.White) }
+                                }
                             }
                         },
                         floatingActionButton = {
@@ -257,11 +286,11 @@ class MainActivity : ComponentActivity() {
                                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                                     placeholder = { Text("Search vault...", color = Color.Gray) },
                                     leadingIcon = { Icon(Icons.Default.Search, null, tint = Color(0xFFFFBF00)) },
-                                    trailingIcon = {
-                                        IconButton(onClick = { updateLocation(); showScanner = true; permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_COARSE_LOCATION)) }) {
-                                            Icon(Icons.Default.QrCodeScanner, null, tint = Color(0xFFFFBF00))
-                                        }
-                                    },
+                                   // trailingIcon = {
+                                     //   IconButton(onClick = { updateLocation(); showScanner = true; permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_COARSE_LOCATION)) }) {
+                                       //     Icon(Icons.Default.QrCodeScanner, null, tint = Color(0xFFFFBF00))
+                                        //}
+                                    //},
                                     shape = RoundedCornerShape(16.dp),
                                     colors = TextFieldDefaults.colors(focusedContainerColor = Color.White.copy(0.1f), unfocusedContainerColor = Color.White.copy(0.1f), focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, focusedTextColor = Color.White)
                                 )
@@ -464,7 +493,7 @@ fun FullAddDialog(existing: Whiskey?, img: String?, onDismiss: () -> Unit, onSav
                 Button(onClick = {
                     val finalNotes = if (aiStores.isNotBlank()) "$aiStores\n\n$notes" else notes
                     onSave(Whiskey(id = existing?.id ?: 0, name = name, country = country, price = price, abv = abv, type = type, volume = volume, flavorProfile = selectedFlavors.joinToString(","), rating = existing?.rating ?: 5, imageUrl = img, notes = finalNotes.trim(), status = status, isWishlist = isWishlist))
-                }, modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 40.dp).height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFBF00))) {
+                }, modifier = Modifier.fillMaxWidth().padding(top = 24.dp, bottom = 85.dp).height(56.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFBF00))) {
                     Text("SAVE TO VAULT", color = Color.Black, fontWeight = FontWeight.Bold)
                 }
             }
