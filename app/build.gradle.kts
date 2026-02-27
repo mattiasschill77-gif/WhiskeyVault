@@ -1,9 +1,9 @@
 import java.util.Properties
 
 plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android") version "1.9.22"
-    id("com.google.devtools.ksp") version "1.9.22-1.0.17"
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.ksp)
 }
 
 android {
@@ -29,12 +29,21 @@ android {
             properties.load(propertiesFile.inputStream())
         }
 
-        // Detta skapar en variabel i din kod som heter BuildConfig.GEMINI_KEY
         buildConfigField(
             "String",
             "GEMINI_KEY",
             "\"${properties.getProperty("GEMINI_API_KEY") ?: ""}\""
         )
+    }
+
+    // --- 16 KB PAGE ALIGNMENT (ANDROID 16 READY) ---
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
     }
 
     buildTypes {
@@ -44,6 +53,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Alternativt sätt att sätta 16kb-flaggan om DSL:en bråkar
+            extra["experimental.properties"] = mapOf("android.bundle.pageSize" to 16384)
+        }
+        getByName("debug") {
+            extra["experimental.properties"] = mapOf("android.bundle.pageSize" to 16384)
         }
     }
 
@@ -58,30 +72,25 @@ android {
 
     buildFeatures {
         compose = true
-        buildConfig = true // Gör så att vi kan använda BuildConfig-klassen i koden
+        buildConfig = true
     }
 
     composeOptions {
+        // Matchar din Kotlin-version 1.9.22
         kotlinCompilerExtensionVersion = "1.5.10"
-    }
-
-    packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
     }
 }
 
 dependencies {
-    // --- ANDROIDX & COMPOSE CORE ---
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-    implementation("androidx.activity:activity-compose:1.8.2")
+    // Vi använder alias(libs...) för att hämta versionerna från din libs.versions.toml
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.activity.compose)
 
-    // --- DENNA RAD FIXAR DINA FEL (LocalLifecycleOwner) ---
+    // Lifecycle för Compose (viktigt för UI-stabilitet)
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
 
-    // --- KAMERA & SCANNING (Städad version 1.3.1) ---
+    // --- KAMERA & SCANNING ---
     val cameraVersion = "1.3.1"
     implementation("androidx.camera:camera-camera2:$cameraVersion")
     implementation("androidx.camera:camera-view:$cameraVersion")
@@ -92,12 +101,11 @@ dependencies {
     implementation("com.google.android.gms:play-services-location:21.1.0")
 
     // --- COMPOSE UI & MATERIAL ---
-    val composeBom = platform("androidx.compose:compose-bom:2024.02.02")
-    implementation(composeBom)
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
-    implementation("androidx.compose.material3:material3")
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.compose.material3)
     implementation("androidx.compose.material:material-icons-extended")
 
     // --- GOOGLE AI / GEMINI ---
@@ -108,14 +116,13 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // --- DATABAS (ROOM) ---
-    val roomVersion = "2.6.1"
-    implementation("androidx.room:room-runtime:$roomVersion")
-    implementation("androidx.room:room-ktx:$roomVersion")
-    ksp("androidx.room:room-compiler:$roomVersion")
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    ksp(libs.androidx.room.compiler)
 
     // --- TEST ---
-    testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
-    debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.espresso.core)
+    debugImplementation(libs.androidx.compose.ui.tooling)
 }
