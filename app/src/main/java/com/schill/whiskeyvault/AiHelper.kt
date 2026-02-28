@@ -1,5 +1,6 @@
 package com.schill.whiskeyvault
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Log
 import com.google.ai.client.generativeai.GenerativeModel
@@ -7,6 +8,7 @@ import com.google.ai.client.generativeai.type.BlockThreshold
 import com.google.ai.client.generativeai.type.HarmCategory
 import com.google.ai.client.generativeai.type.SafetySetting
 import com.google.ai.client.generativeai.type.content
+import com.google.ai.client.generativeai.type.generationConfig // VIKTIG NY IMPORT!
 import org.json.JSONObject
 import java.io.File
 
@@ -23,7 +25,12 @@ class AiHelper(private val apiKey: String) {
         GenerativeModel(
             modelName = "gemini-3-flash-preview",
             apiKey = apiKey,
-            safetySettings = safetySettings
+            safetySettings = safetySettings,
+            // MASTER-TIPS: Tvingar modellen att agera analytiskt och svara i JSON
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                temperature = 0.2f // Lägre temperatur = mindre gissningar, mer fakta
+            }
         )
     } else null
 
@@ -31,15 +38,31 @@ class AiHelper(private val apiKey: String) {
         val currentModel = model ?: return null
 
         return try {
-            val bitmap = BitmapFactory.decodeFile(file.absolutePath) ?: return null
+            val originalBitmap = BitmapFactory.decodeFile(file.absolutePath) ?: return null
 
+            // Skala ner bilden för prestanda och minne (Masterkod-standard)
+            val maxDimension = 1024f
+            val scale = maxDimension / maxOf(originalBitmap.width, originalBitmap.height)
+            val scaledBitmap = if (scale < 1f) {
+                android.graphics.Bitmap.createScaledBitmap(
+                    originalBitmap,
+                    (originalBitmap.width * scale).toInt(),
+                    (originalBitmap.height * scale).toInt(),
+                    true
+                )
+            } else {
+                originalBitmap
+            }
+
+            // --- HÄR ÄR DEN NYA GATEKEEPER-PROMPTEN ---
             val inputContent = content {
-                image(bitmap)
+                image(scaledBitmap)
                 text("""
-                    You are a world-class whiskey expert. Identify the bottle in this image.
-                    Return ONLY a JSON object.
+                    You are a world-class whiskey and spirits expert. 
+                    STEP 1: Analyze the image. Does it clearly contain an alcoholic beverage, a liquor bottle, or a spirits label?
+                    If NO: Return EXACTLY this JSON and nothing else: {"error": "not_alcohol"}
                     
-                    Use these exact keys:
+                    If YES (STEP 2): Identify the bottle and return ONLY a JSON object using these exact keys:
                     "name": Full name and age,
                     "country": Country of origin,
                     "region": Specific region,
@@ -49,8 +72,6 @@ class AiHelper(private val apiKey: String) {
                     "volume": Size,
                     "flavors": Pick 3 notes (Vanilla, Caramel, etc.),
                     "stores": "List 2-3 major retailers in the user's region (default to Sweden/Systembolaget) that sell this."
-                    
-                    Important: No markdown, only raw JSON.
                 """.trimIndent())
             }
 
@@ -63,6 +84,12 @@ class AiHelper(private val apiKey: String) {
             if (startIndex != -1 && endIndex != -1) {
                 val cleanJson = rawText.substring(startIndex, endIndex + 1)
                 val json = JSONObject(cleanJson)
+
+                // --- HÄR FÅNGAR VI UPP OCH STOPPAR KATTEN/KAFFEKOPPEN ---
+                if (json.has("error")) {
+                    android.util.Log.w("AiHelper", "AI avbröt: Bilden innehåller ingen alkohol.")
+                    return null
+                }
 
                 val country = json.optString("country", "Unknown")
                 val region = json.optString("region", "")
@@ -86,7 +113,7 @@ class AiHelper(private val apiKey: String) {
                 )
             } else null
         } catch (e: Exception) {
-            Log.e("AiHelper", "Error: ${e.localizedMessage}")
+            android.util.Log.e("AiHelper", "Error under AI-analys: ${e.localizedMessage}")
             null
         }
     }

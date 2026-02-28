@@ -22,21 +22,26 @@ android {
             useSupportLibrary = true
         }
 
-        // --- SÄKER NYCKELHANTERING FÖR GITHUB ---
+        // --- SÄKER NYCKELHANTERING ---
         val properties = Properties()
         val propertiesFile = project.rootProject.file("local.properties")
         if (propertiesFile.exists()) {
-            properties.load(propertiesFile.inputStream())
+            propertiesFile.inputStream().use { properties.load(it) }
         }
 
+        // Vi döper fältet till GEMINI_API_KEY så det matchar local.properties och din kod
         buildConfigField(
             "String",
-            "GEMINI_KEY",
+            "GEMINI_API_KEY",
             "\"${properties.getProperty("GEMINI_API_KEY") ?: ""}\""
         )
     }
 
-    // --- 16 KB PAGE ALIGNMENT (ANDROID 16 READY) ---
+    buildFeatures {
+        compose = true
+        buildConfig = true // Aktiverar generering av BuildConfig-filen
+    }
+
     packaging {
         jniLibs {
             useLegacyPackaging = false
@@ -53,11 +58,6 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Alternativt sätt att sätta 16kb-flaggan om DSL:en bråkar
-            extra["experimental.properties"] = mapOf("android.bundle.pageSize" to 16384)
-        }
-        getByName("debug") {
-            extra["experimental.properties"] = mapOf("android.bundle.pageSize" to 16384)
         }
     }
 
@@ -70,24 +70,15 @@ android {
         jvmTarget = "11"
     }
 
-    buildFeatures {
-        compose = true
-        buildConfig = true
-    }
-
     composeOptions {
-        // Matchar din Kotlin-version 1.9.22
         kotlinCompilerExtensionVersion = "1.5.10"
     }
 }
 
 dependencies {
-    // Vi använder alias(libs...) för att hämta versionerna från din libs.versions.toml
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
-
-    // Lifecycle för Compose (viktigt för UI-stabilitet)
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
 
     // --- KAMERA & SCANNING ---

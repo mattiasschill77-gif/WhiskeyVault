@@ -125,13 +125,20 @@ fun SortingAndFilterRow(
 }
 
 @Composable
-fun EmptyVaultState() {
+fun EmptyVaultState(searchQuery: String, activeFilter: String) {
     Column(
         Modifier.fillMaxWidth().padding(top = 80.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Icon(Icons.Default.WineBar, null, modifier = Modifier.size(80.dp).alpha(0.3f), tint = Color.White)
         Spacer(Modifier.height(16.dp))
-        Text("Ekot i valvet...", color = Color.White.copy(0.5f), fontSize = 16.sp)
+
+        val message = when {
+            searchQuery.isNotEmpty() -> "Ingen träff på \"$searchQuery\""
+            activeFilter != "All" -> "Ingen whiskey hittades i kategorin $activeFilter"
+            else -> "Ekot i valvet... dags att fylla på?"
+        }
+
+        Text(message, color = Color.White.copy(0.5f), fontSize = 16.sp)
     }
 }
