@@ -488,10 +488,19 @@ fun DetailDialog(
     onDelete: (Whiskey) -> Unit,
     onRatingUpdate: (Whiskey, Int) -> Unit
 ) {
+    // --- DINA BEFINTLIGA STATES ---
     var showFullScreenImage by remember { mutableStateOf(false) }
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { visible = true }
 
+    // --- NYA STATES FÖR SMAKLOGGEN ---
+    var isLogging by remember { mutableStateOf(false) }
+    var smoke by remember { mutableStateOf(5f) }
+    var sweet by remember { mutableStateOf(5f) }
+    var spice by remember { mutableStateOf(5f) }
+    var oak by remember { mutableStateOf(5f) }
+
+    // 1. BEHÅLL DIN FULLSKÄRMSBILD
     if (showFullScreenImage) {
         Dialog(
             onDismissRequest = { showFullScreenImage = false },
@@ -506,12 +515,16 @@ fun DetailDialog(
                 )
                 IconButton(
                     onClick = { showFullScreenImage = false },
-                    Modifier.align(Alignment.TopEnd).padding(top = 40.dp, end = 16.dp).background(Color.Black.copy(0.5f), CircleShape)
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 40.dp, end = 16.dp)
+                        .background(Color.Black.copy(0.5f), CircleShape)
                 ) { Icon(Icons.Default.Close, null, tint = Color.White) }
             }
         }
     }
 
+    // 2. DIN ANIMERADE DIALOG
     Dialog(onDismissRequest = onDismiss) {
         AnimatedVisibility(
             visible = visible,
@@ -520,6 +533,7 @@ fun DetailDialog(
         ) {
             Surface(Modifier.fillMaxSize(), color = Color.Black) {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
+                    // --- BILD-SEKTION ---
                     Box(Modifier.fillMaxWidth().height(300.dp).clickable { showFullScreenImage = true }) {
                         AsyncImage(
                             model = w.imageUrl,
@@ -536,13 +550,18 @@ fun DetailDialog(
                             Modifier.align(Alignment.TopStart).padding(16.dp).background(Color.Black.copy(0.5f), CircleShape)
                         ) { Icon(Icons.Default.ArrowBack, null, tint = Color.White) }
                     }
+
                     Column(Modifier.padding(24.dp)) {
                         Text(w.name, color = Color(0xFFFFBF00), fontSize = 28.sp, fontWeight = FontWeight.Bold)
+
+                        // Wishlist-tagg eller Status
                         if (w.isWishlist) {
                             Text("❤️ ON WISHLIST", color = Color.Red, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         } else {
                             Text("Status: ${w.status}", color = Color.White.copy(0.7f))
                         }
+
+                        // Stjärnbetyg
                         Row(Modifier.padding(vertical = 12.dp)) {
                             repeat(5) { i ->
                                 Icon(
@@ -555,11 +574,13 @@ fun DetailDialog(
                         }
                         Text("${w.country} • ${w.type}", color = Color.White.copy(0.7f))
 
-                        if (w.status == "Open") {
-                            Spacer(Modifier.height(24.dp))
-                            Text("TASTING JOURNAL", color = Color(0xFFFFBF00), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        // --- UPPDATERAD TASTING JOURNAL SEKTION ---
+                        Spacer(Modifier.height(24.dp))
+                        Text("TASTING JOURNAL", color = Color(0xFFFFBF00), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+
+                        if (!isLogging) {
                             OutlinedButton(
-                                onClick = { onEdit() },
+                                onClick = { isLogging = true },
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                                 border = BorderStroke(1.dp, Color(0xFFFFBF00).copy(0.5f))
                             ) {
@@ -567,12 +588,55 @@ fun DetailDialog(
                                 Spacer(Modifier.width(8.dp))
                                 Text("LOG A NEW DRAM", color = Color.White)
                             }
+                        } else {
+                            // SLIDERS-PANELEN
+                            Card(
+                                Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color.White.copy(0.05f))
+                            ) {
+                                Column(Modifier.padding(16.dp)) {
+                                    TastingSlider("Smokiness", smoke) { smoke = it }
+                                    TastingSlider("Sweetness", sweet) { sweet = it }
+                                    TastingSlider("Spice", spice) { spice = it }
+                                    TastingSlider("Oak", oak) { oak = it }
+
+                                    Button(
+                                        onClick = {
+                                            val date = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+                                            // 1. Skapa logg-strängen
+                                            val newLog = "\n\n[LOG $date] 💨${smoke.toInt()} 🍯${sweet.toInt()} 🌶️${spice.toInt()} 🪵${oak.toInt()}"
+
+                                            // 2. Skicka den uppdaterade whiskeyn till databasen via din existerande funktion
+                                            onRatingUpdate(w.copy(notes = w.notes + newLog), w.rating)
+
+                                            // 3. NOLLSTÄLL REGLAGEN (Detta gör att allt är fräscht till nästa gång)
+                                            smoke = 5f
+                                            sweet = 5f
+                                            spice = 5f
+                                            oak = 5f
+
+                                            // 4. STÄNG LOGG-PANELEN
+                                            isLogging = false
+                                        },
+                                        modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFBF00))
+                                    ) {
+                                        Text("SAVE DRAM LOG", color = Color.Black, fontWeight = FontWeight.Bold)
+                                    }
+
+                                    TextButton(onClick = { isLogging = false }, Modifier.fillMaxWidth()) {
+                                        Text("Cancel", color = Color.White)
+                                    }
+                                }
+                            }
                         }
 
+                        // --- FLAVORS & NOTES ---
                         Spacer(Modifier.height(16.dp))
                         Text("FLAVORS & NOTES", color = Color(0xFFFFBF00), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Text(w.flavorProfile, color = Color.White, modifier = Modifier.padding(vertical = 8.dp))
 
+                        // Rita upp tidigare loggar
                         val noteSections = w.notes.split("\n\n")
                         noteSections.forEach { section ->
                             if (section.startsWith("[LOG")) {
@@ -580,20 +644,10 @@ fun DetailDialog(
                                     modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                                     colors = CardDefaults.cardColors(containerColor = Color.White.copy(0.05f))
                                 ) {
-                                    Text(
-                                        text = section,
-                                        modifier = Modifier.padding(12.dp),
-                                        color = Color(0xFFFFBF00).copy(0.9f),
-                                        fontSize = 13.sp
-                                    )
+                                    Text(section, modifier = Modifier.padding(12.dp), color = Color(0xFFFFBF00).copy(0.9f), fontSize = 13.sp)
                                 }
                             } else {
-                                Text(
-                                    section,
-                                    color = Color.White.copy(0.6f),
-                                    fontSize = 14.sp,
-                                    modifier = Modifier.padding(vertical = 4.dp)
-                                )
+                                Text(section, color = Color.White.copy(0.6f), fontSize = 14.sp, modifier = Modifier.padding(vertical = 4.dp))
                             }
                         }
 
@@ -609,6 +663,26 @@ fun DetailDialog(
     }
 }
 
+@Composable
+fun TastingSlider(label: String, value: Float, onValueChange: (Float) -> Unit) {
+    Column(Modifier.padding(vertical = 4.dp)) {
+        Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween) {
+            Text(label, color = Color.White, fontSize = 12.sp)
+            Text(value.toInt().toString(), color = Color(0xFFFFBF00), fontWeight = FontWeight.Bold)
+        }
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = 0f..10f,
+            steps = 9,
+            colors = SliderDefaults.colors(
+                thumbColor = Color(0xFFFFBF00),
+                activeTrackColor = Color(0xFFFFBF00),
+                inactiveTrackColor = Color.White.copy(0.2f)
+            )
+        )
+    }
+}
 @Composable
 fun LiveScannerDialog(
     isDetected: Boolean,
