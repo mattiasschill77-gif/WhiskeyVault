@@ -58,20 +58,24 @@ class AiHelper(private val apiKey: String) {
             val inputContent = content {
                 image(scaledBitmap)
                 text("""
-                    You are a world-class whiskey and spirits expert. 
+                    You are a world-class whiskey appraiser and spirits expert. 
                     STEP 1: Analyze the image. Does it clearly contain an alcoholic beverage, a liquor bottle, or a spirits label?
                     If NO: Return EXACTLY this JSON and nothing else: {"error": "not_alcohol"}
                     
-                    If YES (STEP 2): Identify the bottle and return ONLY a JSON object using these exact keys:
+                    If YES (STEP 2): Identify the bottle and determine its current market value. 
+                    - First, check standard retail pricing (specifically Systembolaget in Sweden). 
+                    - If the bottle is rare, vintage, or discontinued, estimate the current secondary market/auction value based on sources like Whiskybase.
+                    
+                    Return ONLY a JSON object using these exact keys:
                     "name": Full name and age,
                     "country": Country of origin,
                     "region": Specific region,
-                    "price": Estimated price in SEK,
+                    "price": "Return ONLY the numeric value in SEK as a string (e.g., '899' or '15000'). Do NOT include currency symbols or text.",
                     "abv": Alcohol percentage,
                     "type": Style,
                     "volume": Size,
                     "flavors": Pick 3 notes (Vanilla, Caramel, etc.),
-                    "stores": "List 2-3 major retailers in the user's region (default to Sweden/Systembolaget) that sell this."
+                    "stores": "If available at retail, say 'Systembolaget'. If rare, say 'Secondary Market / Auction'."
                 """.trimIndent())
             }
 

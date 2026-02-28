@@ -34,6 +34,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -43,6 +44,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -53,6 +55,7 @@ import coil.compose.AsyncImage
 import com.google.android.gms.location.LocationServices
 import com.schill.whiskeyvault.ui.*
 import com.schill.whiskeyvault.ui.theme.WhiskeyVaultTheme
+import com.schill.whiskeyvault.ui.DetailDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -66,7 +69,6 @@ class MainActivity : ComponentActivity() {
     private var currentPhotoPath: String? = null
     private val toneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
 
-    // Denna funktion använder nu AiHelper för att söka på streckkod
     private fun searchWhiskeyPrice(
         barcode: String,
         country: String,
@@ -78,9 +80,6 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                // Skapar en tillfällig fil för att låtsas vara en bild för AiHelper (eftersom vi bara har barcode här)
-                // OBS: I en framtida version kanske du vill bygga en specifik text-prompt funktion i AiHelper för just streckkoder.
-                // För nu hanterar vi det smidigt här inne:
                 val prompt = """
                     Identify whiskey from barcode $barcode. User in $country.
                     Return ONLY JSON: {
@@ -93,11 +92,7 @@ class MainActivity : ComponentActivity() {
                     }
                 """.trimIndent()
 
-                // En liten fulhack tills vi bygger ut AiHelper för streckkoder:
-                // Vi låter AiHelper hantera en dummy-fil och hoppas den läser barcode.
-                // Idealet är att lägga in en 'analyzeBarcode(barcode)' i AiHelper.
                 withContext(Dispatchers.Main) {
-                    // Fallback tills vidare: Returnerar en tom draft så användaren får skriva in
                     onResult(
                         Whiskey(
                             name = "Scanned Barcode: $barcode",
@@ -166,9 +161,11 @@ class MainActivity : ComponentActivity() {
                 var isProcessing by remember { mutableStateOf(false) }
                 var capturedUrl by remember { mutableStateOf<String?>(null) }
                 var scannedResult by remember { mutableStateOf<Whiskey?>(null) }
-
+                var showRouletteDialog by remember { mutableStateOf(false) }
                 val detectionHistory = remember { mutableStateListOf<String>() }
                 var lastDetectionTime by remember { mutableLongStateOf(0L) }
+                var showSnapshotDialog by remember { mutableStateOf(false) }
+                var showFlightsDialog by remember { mutableStateOf(false) }
 
                 @SuppressLint("MissingPermission")
                 fun updateLocation() {
@@ -211,10 +208,8 @@ class MainActivity : ComponentActivity() {
                                 isProcessing = false
 
                                 if (result == null) {
-                                    // AI:n sa nej! Öppna skämtdialogen istället för Add-dialogen.
                                     showRetryDialog = true
                                 } else {
-                                    // Allt gick bra!
                                     aiDraftWhiskey = result
                                     showAddDialog = true
                                 }
@@ -258,29 +253,24 @@ class MainActivity : ComponentActivity() {
                                 Text("WHISKEY VAULT", color = Color(0xFFFFBF00), fontSize = 24.sp, fontWeight = FontWeight.Black)
 
                                 Row {
-                                    IconButton(onClick = {
-                                        val wishlist = myCollection.filter { it.isWishlist }
-                                        val shareText = if (wishlist.isNotEmpty()) {
-                                            "🥃 Min Whiskey Wishlist:\n\n" + wishlist.joinToString("\n") { "- ${it.name} (${it.type})" }
-                                        } else {
-                                            "Min Wishlist är tom just nu! 🥃"
-                                        }
-
-                                        val sendIntent = Intent().apply {
-                                            action = Intent.ACTION_SEND
-                                            putExtra(Intent.EXTRA_TEXT, shareText)
-                                            type = "text/plain"
-                                        }
-                                        context.startActivity(Intent.createChooser(sendIntent, "Dela Wishlist"))
-                                    }) {
-                                        Icon(Icons.Default.Share, null, tint = Color.White)
+                                    // 1. Din Dram Roulette-knapp (Guld)
+                                    IconButton(onClick = { showRouletteDialog = true }) {
+                                        Icon(Icons.Default.Casino, contentDescription = "Dram Roulette", tint = Color(0xFFFFBF00))
                                     }
-                                    IconButton(onClick = { exportToCsv(context, myCollection) }) {
-                                        Icon(Icons.Default.FileDownload, contentDescription = "Export CSV", tint = Color.White)
+
+                                    // 2. --- NY: TASTING FLIGHTS-KNAPPEN ---
+                                    IconButton(onClick = { showFlightsDialog = true }) {
+                                        Icon(Icons.Default.Liquor, contentDescription = "Tasting Flights", tint = Color.White)
+                                    }
+
+                                    // 3. Din Snapshot/Dela-knapp
+                                    IconButton(onClick = { showSnapshotDialog = true }) {
+                                        Icon(Icons.Default.Share, contentDescription = "Vault Snapshot", tint = Color.White)
                                     }
                                 }
                             }
                         },
+
                         floatingActionButton = {
                             FloatingActionButton(
                                 onClick = { showSelectionDialog = true },
@@ -333,6 +323,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
+                        // --- DIALOGER ---
                         if (showScanner) {
                             LiveScannerDialog(
                                 isDetected = isCodeDetected,
@@ -404,6 +395,7 @@ class MainActivity : ComponentActivity() {
                                 containerColor = Color(0xFF1E1E1E)
                             )
                         }
+
                         if (showRetryDialog) {
                             AlertDialog(
                                 onDismissRequest = { showRetryDialog = false },
@@ -418,7 +410,6 @@ class MainActivity : ComponentActivity() {
                                     Button(
                                         onClick = {
                                             showRetryDialog = false
-                                            // Startar om kameran direkt!
                                             permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
                                         },
                                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFBF00))
@@ -427,21 +418,32 @@ class MainActivity : ComponentActivity() {
                                 dismissButton = {
                                     TextButton(onClick = {
                                         showRetryDialog = false
-                                        aiDraftWhiskey = null // Säkerställer att den är tom
-                                        showAddDialog = true  // Öppnar manuella rutan
+                                        aiDraftWhiskey = null
+                                        showAddDialog = true
                                     }) { Text("Manual Entry", color = Color.White) }
                                 },
                                 containerColor = Color(0xFF1E1E1E)
                             )
                         }
 
-                        // Dialogerna anropas här!
                         if (showStats) {
                             InsightsDialog(myCollection = myCollection, onDismiss = { showStats = false })
                         }
 
+                        // --- MAGIN LIGGER HÄR: ROULETTE-ANROPET! ---
+                        if (showRouletteDialog) {
+                            DramRouletteDialog(
+                                collection = myCollection.filter { !it.isWishlist }, // Vi snurrar bara bland flaskor vi faktiskt äger
+                                onDismiss = { showRouletteDialog = false }
+                            )
+                        }
+                        if (showSnapshotDialog) {
+                            VaultSnapshotDialog(
+                                collection = myCollection.filter { !it.isWishlist }, // Vi räknar bara flaskor du faktiskt äger
+                                onDismiss = { showSnapshotDialog = false }
+                            )
+                        }
                         if (showAddDialog) {
-                            // Antar att FullAddDialog finns i dina UI-filer
                             FullAddDialog(
                                 existing = aiDraftWhiskey ?: editingWhiskey,
                                 img = capturedUrl,
@@ -451,6 +453,12 @@ class MainActivity : ComponentActivity() {
                                 onSave = {
                                     scope.launch { whiskeyDao.insertWhiskey(it) }; showAddDialog = false; aiDraftWhiskey = null; editingWhiskey = null
                                 }
+                            )
+                        }
+                        if (showFlightsDialog) {
+                            TastingFlightsDialog(
+                                collection = myCollection,
+                                onDismiss = { showFlightsDialog = false }
                             )
                         }
 
@@ -488,19 +496,16 @@ fun DetailDialog(
     onDelete: (Whiskey) -> Unit,
     onRatingUpdate: (Whiskey, Int) -> Unit
 ) {
-    // --- DINA BEFINTLIGA STATES ---
     var showFullScreenImage by remember { mutableStateOf(false) }
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { visible = true }
 
-    // --- NYA STATES FÖR SMAKLOGGEN ---
     var isLogging by remember { mutableStateOf(false) }
     var smoke by remember { mutableStateOf(5f) }
     var sweet by remember { mutableStateOf(5f) }
     var spice by remember { mutableStateOf(5f) }
     var oak by remember { mutableStateOf(5f) }
 
-    // 1. BEHÅLL DIN FULLSKÄRMSBILD
     if (showFullScreenImage) {
         Dialog(
             onDismissRequest = { showFullScreenImage = false },
@@ -524,7 +529,6 @@ fun DetailDialog(
         }
     }
 
-    // 2. DIN ANIMERADE DIALOG
     Dialog(onDismissRequest = onDismiss) {
         AnimatedVisibility(
             visible = visible,
@@ -533,7 +537,6 @@ fun DetailDialog(
         ) {
             Surface(Modifier.fillMaxSize(), color = Color.Black) {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
-                    // --- BILD-SEKTION ---
                     Box(Modifier.fillMaxWidth().height(300.dp).clickable { showFullScreenImage = true }) {
                         AsyncImage(
                             model = w.imageUrl,
@@ -554,14 +557,12 @@ fun DetailDialog(
                     Column(Modifier.padding(24.dp)) {
                         Text(w.name, color = Color(0xFFFFBF00), fontSize = 28.sp, fontWeight = FontWeight.Bold)
 
-                        // Wishlist-tagg eller Status
                         if (w.isWishlist) {
                             Text("❤️ ON WISHLIST", color = Color.Red, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                         } else {
                             Text("Status: ${w.status}", color = Color.White.copy(0.7f))
                         }
 
-                        // Stjärnbetyg
                         Row(Modifier.padding(vertical = 12.dp)) {
                             repeat(5) { i ->
                                 Icon(
@@ -574,7 +575,6 @@ fun DetailDialog(
                         }
                         Text("${w.country} • ${w.type}", color = Color.White.copy(0.7f))
 
-                        // --- UPPDATERAD TASTING JOURNAL SEKTION ---
                         Spacer(Modifier.height(24.dp))
                         Text("TASTING JOURNAL", color = Color(0xFFFFBF00), fontSize = 14.sp, fontWeight = FontWeight.Bold)
 
@@ -589,7 +589,6 @@ fun DetailDialog(
                                 Text("LOG A NEW DRAM", color = Color.White)
                             }
                         } else {
-                            // SLIDERS-PANELEN
                             Card(
                                 Modifier.fillMaxWidth().padding(vertical = 12.dp),
                                 colors = CardDefaults.cardColors(containerColor = Color.White.copy(0.05f))
@@ -603,19 +602,14 @@ fun DetailDialog(
                                     Button(
                                         onClick = {
                                             val date = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-                                            // 1. Skapa logg-strängen
                                             val newLog = "\n\n[LOG $date] 💨${smoke.toInt()} 🍯${sweet.toInt()} 🌶️${spice.toInt()} 🪵${oak.toInt()}"
 
-                                            // 2. Skicka den uppdaterade whiskeyn till databasen via din existerande funktion
                                             onRatingUpdate(w.copy(notes = w.notes + newLog), w.rating)
 
-                                            // 3. NOLLSTÄLL REGLAGEN (Detta gör att allt är fräscht till nästa gång)
                                             smoke = 5f
                                             sweet = 5f
                                             spice = 5f
                                             oak = 5f
-
-                                            // 4. STÄNG LOGG-PANELEN
                                             isLogging = false
                                         },
                                         modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
@@ -631,12 +625,10 @@ fun DetailDialog(
                             }
                         }
 
-                        // --- FLAVORS & NOTES ---
                         Spacer(Modifier.height(16.dp))
                         Text("FLAVORS & NOTES", color = Color(0xFFFFBF00), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Text(w.flavorProfile, color = Color.White, modifier = Modifier.padding(vertical = 8.dp))
 
-                        // Rita upp tidigare loggar
                         val noteSections = w.notes.split("\n\n")
                         noteSections.forEach { section ->
                             if (section.startsWith("[LOG")) {
@@ -683,6 +675,7 @@ fun TastingSlider(label: String, value: Float, onValueChange: (Float) -> Unit) {
         )
     }
 }
+
 @Composable
 fun LiveScannerDialog(
     isDetected: Boolean,
@@ -695,7 +688,6 @@ fun LiveScannerDialog(
     ) {
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             if (!isDetected) {
-                // Notera: BarcodeScannerView måste finnas bland dina UI-komponenter
                 BarcodeScannerView(modifier = Modifier.fillMaxSize()) { onCodeScanned(it) }
             }
             ScannerOverlay(isDetected = isDetected, onDismiss = onDismiss)
@@ -737,6 +729,329 @@ fun ScannerOverlay(isDetected: Boolean, onDismiss: () -> Unit) {
             modifier = Modifier.align(Alignment.TopStart).padding(top = 40.dp, start = 20.dp)
         ) {
             Icon(Icons.Default.Close, null, tint = Color.White)
+        }
+    }
+}
+
+@Composable
+fun DramRouletteDialog(
+    collection: List<Whiskey>,
+    onDismiss: () -> Unit
+) {
+    var isSpinning by remember { mutableStateOf(false) }
+    var winner by remember { mutableStateOf<Whiskey?>(null) }
+    var displayedWhiskey by remember { mutableStateOf<Whiskey?>(null) }
+
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+
+    LaunchedEffect(isSpinning) {
+        if (isSpinning && collection.isNotEmpty()) {
+            val targetWinner = collection.random()
+            winner = null
+            var delayTime = 30L
+
+            for (i in 1..25) {
+                displayedWhiskey = collection.random()
+                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                kotlinx.coroutines.delay(delayTime)
+                delayTime += (i * 2)
+            }
+
+            displayedWhiskey = targetWinner
+            winner = targetWinner
+            haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+            isSpinning = false
+        }
+    }
+
+    if (collection.isEmpty()) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Vault is Empty", color = Color(0xFFFFBF00)) },
+            text = { Text("You need to add some bottles before playing Dram Roulette!", color = Color.White) },
+            confirmButton = {
+                TextButton(onClick = onDismiss) { Text("OK", color = Color(0xFFFFBF00)) }
+            },
+            containerColor = Color(0xFF1E1E1E)
+        )
+        return
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = Color(0xFF121212),
+            shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(2.dp, Color(0xFFFFBF00).copy(0.5f))
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("DRAM ROULETTE 🎰", color = Color(0xFFFFBF00), fontSize = 22.sp, fontWeight = FontWeight.Black)
+                Spacer(Modifier.height(8.dp))
+                Text("Let the vault decide your fate.", color = Color.White.copy(0.6f), fontSize = 14.sp)
+
+                Spacer(Modifier.height(32.dp))
+
+                Box(
+                    modifier = Modifier.size(200.dp).background(Color.White.copy(0.05f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (displayedWhiskey != null) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            AsyncImage(
+                                model = displayedWhiskey!!.imageUrl,
+                                contentDescription = null,
+                                modifier = Modifier.size(120.dp).clip(CircleShape),
+                                contentScale = ContentScale.Crop
+                            )
+                            Spacer(Modifier.height(16.dp))
+                            Text(
+                                text = displayedWhiskey!!.name,
+                                color = if (winner != null) Color(0xFFFFBF00) else Color.White,
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center,
+                                maxLines = 1
+                            )
+                        }
+                    } else {
+                        Icon(Icons.Default.HelpOutline, null, tint = Color.White.copy(0.2f), modifier = Modifier.size(64.dp))
+                    }
+                }
+
+                Spacer(Modifier.height(32.dp))
+
+                Button(
+                    onClick = { if (!isSpinning) isSpinning = true },
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isSpinning) Color.Gray else Color(0xFFFFBF00)
+                    ),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text(
+                        text = if (isSpinning) "SPINNING..." else "SPIN THE WHEEL",
+                        color = if (isSpinning) Color.White else Color.Black,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 18.sp
+                    )
+                }
+
+                Spacer(Modifier.height(16.dp))
+                TextButton(onClick = onDismiss, enabled = !isSpinning) {
+                    Text("Close", color = Color.White.copy(0.7f))
+                }
+            }
+        }
+    }
+}
+@Composable
+fun VaultSnapshotDialog(
+    collection: List<Whiskey>,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+
+    val totalBottles = collection.size
+    val totalValue = collection.sumOf { it.price.replace(Regex("[^0-9.]"), "").toDoubleOrNull() ?: 0.0 }
+    val formattedValue = String.format("%,.0f kr", totalValue).replace(",", " ")
+
+    val topBottle = collection.maxByOrNull { it.rating }
+    val favoriteStyle = collection.groupingBy { it.type }.eachCount().maxByOrNull { it.value }?.key ?: "Mixed"
+
+    val shareAction = {
+        val text = """
+            🥃 MY WHISKEY VAULT SNAPSHOT 🥃
+            
+            📦 Bottles: $totalBottles
+            💰 Total Value: $formattedValue
+            👑 Crown Jewel: ${topBottle?.name ?: "None"}
+            🎯 Favorite Style: $favoriteStyle
+            
+            Can your shelf beat this? 😉
+        """.trimIndent()
+
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        context.startActivity(Intent.createChooser(intent, "Share Vault Snapshot"))
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = Color(0xFF121212),
+            shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(2.dp, Color(0xFFFFBF00).copy(0.5f))
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("VAULT SNAPSHOT 📸", color = Color(0xFFFFBF00), fontSize = 22.sp, fontWeight = FontWeight.Black)
+                Spacer(Modifier.height(8.dp))
+                Text("Your collection at a glance", color = Color.White.copy(0.6f), fontSize = 14.sp)
+
+                Spacer(Modifier.height(24.dp))
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = Color.White.copy(0.05f))
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        SnapshotStatRow("Total Bottles", "$totalBottles")
+                        HorizontalDivider(color = Color.White.copy(0.1f), modifier = Modifier.padding(vertical = 12.dp))
+                        SnapshotStatRow("Total Value", formattedValue)
+                        HorizontalDivider(color = Color.White.copy(0.1f), modifier = Modifier.padding(vertical = 12.dp))
+                        SnapshotStatRow("Favorite Style", favoriteStyle)
+                        HorizontalDivider(color = Color.White.copy(0.1f), modifier = Modifier.padding(vertical = 12.dp))
+                        SnapshotStatRow("Crown Jewel", topBottle?.name ?: "-")
+                    }
+                }
+
+                Spacer(Modifier.height(32.dp))
+
+                Button(
+                    onClick = shareAction,
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFBF00)),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = "Share", tint = Color.Black)
+                    Spacer(Modifier.width(8.dp))
+                    Text("SHARE STATS", color = Color.Black, fontWeight = FontWeight.Black, fontSize = 18.sp)
+                }
+
+                Spacer(Modifier.height(16.dp))
+                TextButton(onClick = onDismiss) {
+                    Text("Close", color = Color.White.copy(0.7f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SnapshotStatRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = Color.White.copy(0.7f), fontSize = 14.sp)
+        Text(
+            text = value,
+            color = Color(0xFFFFBF00),
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f).padding(start = 16.dp),
+            maxLines = 1
+        )
+    }
+}
+@Composable
+fun TastingFlightsDialog(
+    collection: List<Whiskey>,
+    onDismiss: () -> Unit
+) {
+    // MAGIN: Leta upp alla unika "Flights" som gömmer sig i dina anteckningar
+    val flightsMap = remember(collection) {
+        val map = mutableMapOf<String, MutableList<Whiskey>>()
+        collection.forEach { w ->
+            // Letar efter taggen [FLIGHT: Namnet]
+            val matches = Regex("\\[FLIGHT: (.*?)\\]").findAll(w.notes)
+            matches.forEach { match ->
+                val flightName = match.groupValues[1]
+                if (map[flightName] == null) map[flightName] = mutableListOf()
+                map[flightName]?.add(w)
+            }
+        }
+        map
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+    ) {
+        Surface(Modifier.fillMaxSize(), color = Color(0xFF121212)) {
+            Column(Modifier.fillMaxSize().padding(top = 40.dp, start = 24.dp, end = 24.dp, bottom = 24.dp)) {
+                // Header
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column {
+                        Text("TASTING FLIGHTS 🥃", color = Color(0xFFFFBF00), fontSize = 24.sp, fontWeight = FontWeight.Black)
+                        Text("Curated collections & tasting trays", color = Color.White.copy(0.6f), fontSize = 14.sp)
+                    }
+                    IconButton(onClick = onDismiss, modifier = Modifier.background(Color.White.copy(0.1f), CircleShape)) {
+                        Icon(Icons.Default.Close, null, tint = Color.White)
+                    }
+                }
+
+                Spacer(Modifier.height(32.dp))
+
+                if (flightsMap.isEmpty()) {
+                    // Om inga flights finns ännu
+                    Box(Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.Liquor, null, tint = Color.White.copy(0.2f), modifier = Modifier.size(64.dp))
+                            Spacer(Modifier.height(16.dp))
+                            Text("No flights created yet.", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            Text("Go to a bottle's detail page to add it to a flight!", color = Color.Gray, fontSize = 14.sp)
+                        }
+                    }
+                } else {
+                    // Rita upp provningsbrickorna!
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(24.dp),
+                        contentPadding = PaddingValues(bottom = 32.dp)
+                    ) {
+                        flightsMap.forEach { (flightName, bottles) ->
+                            item {
+                                FlightTrayCard(flightName = flightName, bottles = bottles)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Komponenten som ritar upp själva "Brickan"
+@Composable
+fun FlightTrayCard(flightName: String, bottles: List<Whiskey>) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color.White.copy(0.05f)),
+        border = BorderStroke(1.dp, Color(0xFFFFBF00).copy(0.3f))
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(flightName.uppercase(), color = Color(0xFFFFBF00), fontWeight = FontWeight.Black, letterSpacing = 2.sp)
+            Text("${bottles.size} bottles in this flight", color = Color.Gray, fontSize = 12.sp)
+
+            Spacer(Modifier.height(16.dp))
+
+            // En horisontell scroll-lista för flaskorna på brickan
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                bottles.forEach { w ->
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(100.dp)) {
+                        AsyncImage(
+                            model = w.imageUrl,
+                            contentDescription = null,
+                            modifier = Modifier.size(100.dp).clip(RoundedCornerShape(12.dp)),
+                            contentScale = ContentScale.Crop
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(w.name, color = Color.White, fontSize = 12.sp, maxLines = 1, textAlign = TextAlign.Center)
+                    }
+                }
+            }
         }
     }
 }

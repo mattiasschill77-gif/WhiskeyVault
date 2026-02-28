@@ -35,6 +35,10 @@ fun DetailDialog(
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { visible = true }
 
+    // --- NYA STATES FÖR FLIGHTS ---
+    var showAddFlightDialog by remember { mutableStateOf(false) }
+    var newFlightName by remember { mutableStateOf("") }
+
     // --- ZOOMAD BILD ---
     if (showFullScreenImage) {
         Dialog(
@@ -137,6 +141,63 @@ fun DetailDialog(
                                 Text(section, color = Color.White.copy(0.6f), fontSize = 14.sp, modifier = Modifier.padding(vertical = 4.dp))
                             }
                         }
+
+                        // --- NY KNAPP OCH POPUP: ADD TO FLIGHT ---
+                        OutlinedButton(
+                            onClick = { showAddFlightDialog = true },
+                            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                            border = BorderStroke(1.dp, Color.White.copy(0.2f))
+                        ) {
+                            Icon(Icons.Default.Liquor, null, tint = Color(0xFFFFBF00))
+                            Spacer(Modifier.width(8.dp))
+                            Text("ADD TO TASTING FLIGHT", color = Color.White)
+                        }
+
+                        if (showAddFlightDialog) {
+                            AlertDialog(
+                                onDismissRequest = { showAddFlightDialog = false },
+                                title = { Text("Add to Flight 🥃", color = Color(0xFFFFBF00)) },
+                                text = {
+                                    Column {
+                                        Text("Name your tasting flight (e.g. 'Friday Smoke' or 'Top Shelf'):", color = Color.White.copy(0.7f), fontSize = 14.sp)
+                                        Spacer(Modifier.height(12.dp))
+                                        OutlinedTextField(
+                                            value = newFlightName,
+                                            onValueChange = { newFlightName = it },
+                                            singleLine = true,
+                                            colors = OutlinedTextFieldDefaults.colors(
+                                                focusedTextColor = Color.White,
+                                                unfocusedTextColor = Color.White,
+                                                focusedBorderColor = Color(0xFFFFBF00),
+                                                unfocusedBorderColor = Color.White.copy(0.3f)
+                                            )
+                                        )
+                                    }
+                                },
+                                confirmButton = {
+                                    TextButton(onClick = {
+                                        if (newFlightName.isNotBlank()) {
+                                            // 1. Skapa den dolda taggen
+                                            val flightTag = "\n\n[FLIGHT: ${newFlightName.trim()}]"
+                                            // 2. Spara i databasen via din befintliga funktion
+                                            onRatingUpdate(w.copy(notes = w.notes + flightTag), w.rating)
+                                            // 3. Stäng och nollställ
+                                            showAddFlightDialog = false
+                                            newFlightName = ""
+                                        }
+                                    }) {
+                                        Text("ADD TO TRAY", color = Color(0xFFFFBF00), fontWeight = FontWeight.Bold)
+                                    }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { showAddFlightDialog = false }) {
+                                        Text("Cancel", color = Color.White.copy(0.5f))
+                                    }
+                                },
+                                containerColor = Color(0xFF1E1E1E)
+                            )
+                        }
+                        // --- SLUT PÅ FLIGHT-KOD ---
 
                         Button(
                             onClick = onEdit,
