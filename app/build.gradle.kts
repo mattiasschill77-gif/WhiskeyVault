@@ -21,20 +21,6 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
-
-        // --- SÄKER NYCKELHANTERING ---
-        val properties = Properties()
-        val propertiesFile = project.rootProject.file("local.properties")
-        if (propertiesFile.exists()) {
-            propertiesFile.inputStream().use { properties.load(it) }
-        }
-
-        // Vi döper fältet till GEMINI_API_KEY så det matchar local.properties och din kod
-        buildConfigField(
-            "String",
-            "GEMINI_API_KEY",
-            "\"${properties.getProperty("GEMINI_API_KEY") ?: ""}\""
-        )
     }
 
     buildFeatures {
@@ -99,8 +85,6 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation("androidx.compose.material:material-icons-extended")
 
-    // --- GOOGLE AI / GEMINI ---
-    implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
 
     // --- BILDHANTERING & NÄTVERK ---
     implementation("io.coil-kt:coil-compose:2.6.0")

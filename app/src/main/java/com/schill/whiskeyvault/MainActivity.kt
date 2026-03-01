@@ -76,7 +76,7 @@ class MainActivity : ComponentActivity() {
         onResult: (Whiskey, Boolean) -> Unit,
         onError: () -> Unit
     ) {
-        val aiHelper = AiHelper(apiKey = BuildConfig.GEMINI_API_KEY)
+        val aiHelper = AiHelper()
 
         lifecycleScope.launch(Dispatchers.IO) {
             try {
@@ -139,7 +139,7 @@ class MainActivity : ComponentActivity() {
                 val scope = rememberCoroutineScope()
                 val vibrator = context.getSystemService(VIBRATOR_SERVICE) as Vibrator
 
-                val aiHelper = remember { AiHelper(BuildConfig.GEMINI_API_KEY) }
+                val aiHelper = remember { AiHelper() }
                 val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
                 val myCollection by whiskeyDao.getAllWhiskeys().collectAsState(initial = emptyList())
